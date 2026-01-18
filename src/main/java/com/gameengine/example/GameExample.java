@@ -1,224 +1,447 @@
 package com.gameengine.example;
 
-import com.gameengine.components.*;
+import com.gameengine.components.TransformComponent;
+import com.gameengine.components.RenderComponent;
+import com.gameengine.components.PhysicsComponent;
 import com.gameengine.core.GameObject;
 import com.gameengine.core.GameEngine;
-import com.gameengine.core.GameLogic;
 import com.gameengine.graphics.Renderer;
 import com.gameengine.math.Vector2;
 import com.gameengine.scene.Scene;
+import com.gameengine.input.InputManager;
 
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
 import java.util.Random;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 public class GameExample {
+    private static final int WINDOW_WIDTH = 800;
+    private static final int WINDOW_HEIGHT = 600;
+    private static final float PLAYER_SPEED = 250.0f;
+    private static final float FIREBALL_SPEED = 500.0f;
+    private static final float CENTIPEDE_SPEED = 100.0f;
+    private static final float FIRE_RATE = 0.3f;
+    private static final float SPAWN_RATE = 1.2f;
+    private static final int PARALLEL_THRESHOLD = 10;
+    private static final int CORE_POOL_SIZE = 4;
+
     public static void main(String[] args) {
         System.out.println("启动游戏引擎...");
-        
         try {
-            GameEngine engine = new GameEngine(1920, 1080, "游戏引擎");
-            
+            GameEngine engine = new GameEngine(WINDOW_WIDTH, WINDOW_HEIGHT, "葫芦娃大战蜈蚣精");
+
             Scene gameScene = new Scene("GameScene") {
                 private Renderer renderer;
                 private Random random;
-                private float time;
-                private GameLogic gameLogic;
-                
+                private float fireTimer;
+                private float spawnTimer;
+                private final InputManager inputManager = InputManager.getInstance();
+                private final List<GameObject> fireballs = new ArrayList<>();
+                private final List<GameObject> centipedes = new ArrayList<>();
+                private GameObject player;
+                private int score = 0;
+                private boolean isPlayerDead = false;
+                private Vector2 mousePos = new Vector2(400, 300);
+                private final ExecutorService physicsExecutor = Executors.newFixedThreadPool(CORE_POOL_SIZE);
+                private final ExecutorService collisionExecutor = Executors.newFixedThreadPool(CORE_POOL_SIZE);
+
                 @Override
                 public void initialize() {
                     super.initialize();
                     this.renderer = engine.getRenderer();
                     this.random = new Random();
-                    this.time = 0;
-                    this.gameLogic = new GameLogic(this);
-                    this.gameLogic.setGameEngine(engine);
-                    
+                    this.fireTimer = 0;
+                    this.spawnTimer = 0;
+                    this.score = 0;
+                    this.isPlayerDead = false;
                     createPlayer();
-                    createAIPlayers();
-                    createDecorations();
+                    for (int i = 0; i < 3; i++) {
+                        createCentipede();
+                    }
                 }
-                
+
                 @Override
                 public void update(float deltaTime) {
                     super.update(deltaTime);
-                    time += deltaTime;
-                    
-                    gameLogic.handlePlayerInput(deltaTime);
-                    gameLogic.handleAIPlayerMovement(deltaTime);
-                    gameLogic.handleAIPlayerAvoidance(deltaTime);
-                    gameLogic.updatePhysics();
-                    gameLogic.checkCollisions();
-                    
-                    if (gameLogic.isGameOver()) {
-                        return;
+                    if (isPlayerDead) return;
+
+                    fireTimer += deltaTime;
+                    spawnTimer += deltaTime;
+                    this.mousePos = inputManager.getMousePosition();
+
+                    handlePlayerMovement(deltaTime);
+                    if (fireTimer > FIRE_RATE) {
+                        createFireball();
+                        fireTimer = 0;
                     }
-                    
-                    if (time >= 1.0f) {
-                        createAIPlayer();
-                        time = 0;
+                    if (spawnTimer > SPAWN_RATE) {
+                        createCentipede();
+                        spawnTimer = 0;
                     }
+                    updateFireballs(deltaTime);
+                    updateCentipedes(deltaTime);
+                    checkCollisions();
                 }
-                
+
                 @Override
                 public void render() {
-                    renderer.drawRect(0, 0, 1920, 1080, 0.1f, 0.1f, 0.2f, 1.0f);
-                    
+                    renderer.drawRect(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, 0.1f, 0.1f, 0.2f, 1.0f);
                     super.render();
-                    
-                    if (gameLogic.isGameOver()) {
-                        renderer.drawRect(760, 490, 400, 100, 0.0f, 0.0f, 0.0f, 0.7f);
-                        renderer.drawText(960, 540, "GAME OVER", 1.0f, 1.0f, 1.0f, 1.0f);
+                    renderer.drawText("当前得分: " + score, 10, 20, 1.0f, 1.0f, 1.0f, 1.0f);
+
+                    if (isPlayerDead) {
+                        renderer.drawText("葫芦娃阵亡！游戏结束！", 280, 280, 1.0f, 0.0f, 0.0f, 1.0f);
+                        renderer.drawText("最终得分: " + score, 350, 320, 1.0f, 0.8f, 0.0f, 1.0f);
+                        physicsExecutor.shutdown();
+                        collisionExecutor.shutdown();
                     }
                 }
-                
+
                 private void createPlayer() {
-                    GameObject player = new GameObject("Player") {
-                        private Vector2 basePosition;
-                        
+                    player = new GameObject("葫芦娃") {
                         @Override
                         public void update(float deltaTime) {
                             super.update(deltaTime);
                             updateComponents(deltaTime);
-                            updateBodyParts();
                         }
-                        
+
                         @Override
                         public void render() {
-                            renderBodyParts();
-                        }
-                        
-                        private void updateBodyParts() {
+                            super.render();
+                            renderComponents();
                             TransformComponent transform = getComponent(TransformComponent.class);
-                            if (transform != null) {
-                                basePosition = transform.getPosition();
-                            }
-                        }
-                        
-                        private void renderBodyParts() {
-                            if (basePosition == null) return;
+                            if (transform == null) return;
+                            Vector2 pos = transform.getPosition();
                             
-                            renderer.drawRect(
-                                basePosition.x - 8, basePosition.y - 10, 16, 20,
-                                1.0f, 0.0f, 0.0f, 1.0f
-                            );
-                            
-                            renderer.drawRect(
-                                basePosition.x - 6, basePosition.y - 22, 12, 12,
-                                1.0f, 0.5f, 0.0f, 1.0f
-                            );
-                            
-                            renderer.drawRect(
-                                basePosition.x - 13, basePosition.y - 5, 6, 12,
-                                1.0f, 0.8f, 0.0f, 1.0f
-                            );
-                            
-                            renderer.drawRect(
-                                basePosition.x + 7, basePosition.y - 5, 6, 12,
-                                0.0f, 1.0f, 0.0f, 1.0f
-                            );
+                            renderer.drawRect(pos.x - 10, pos.y - 15, 20, 30, 0.0f, 0.8f, 0.0f, 1.0f);
+                            renderer.drawRect(pos.x - 8, pos.y - 30, 16, 16, 0.0f, 1.0f, 0.0f, 1.0f);
+                            renderer.drawRect(pos.x - 16, pos.y - 5, 6, 18, 0.5f, 1.0f, 0.0f, 1.0f);
+                            renderer.drawRect(pos.x + 10, pos.y - 5, 6, 18, 0.5f, 1.0f, 0.0f, 1.0f);
                         }
                     };
-                    
-                    player.addComponent(new TransformComponent(new Vector2(960, 540)));
-                    
-                    PhysicsComponent physics = player.addComponent(new PhysicsComponent(1.0f));
-                    physics.setFriction(0.95f);
-                    
+
+                    player.addComponent(new TransformComponent(new Vector2(400, 300)));
+                    PhysicsComponent playerPhys = player.addComponent(new PhysicsComponent(1.0f));
+                    playerPhys.setFriction(0.95f);
                     addGameObject(player);
                 }
-                
-                private void createAIPlayers() {
-                    for (int i = 0; i < 30; i++) {
-                        createAIPlayer();
-                    }
+
+                private void handlePlayerMovement(float deltaTime) {
+                    if (player == null) return;
+                    TransformComponent trans = player.getComponent(TransformComponent.class);
+                    PhysicsComponent phys = player.getComponent(PhysicsComponent.class);
+                    if (trans == null || phys == null) return;
+
+                    Vector2 moveDir = new Vector2(0, 0);
+                    if (inputManager.isKeyPressed(87)) moveDir.y -= 1;
+                    if (inputManager.isKeyPressed(83)) moveDir.y += 1;
+                    if (inputManager.isKeyPressed(65)) moveDir.x -= 1;
+                    if (inputManager.isKeyPressed(68)) moveDir.x += 1;
+
+                    moveDir = moveDir.normalize();
+                    phys.setVelocity(moveDir.multiply(PLAYER_SPEED));
+
+                    Vector2 pos = trans.getPosition();
+                    pos.x = Math.max(20, Math.min(pos.x, WINDOW_WIDTH - 20));
+                    pos.y = Math.max(30, Math.min(pos.y, WINDOW_HEIGHT - 30));
+                    trans.setPosition(pos);
                 }
-                
-                private void createAIPlayer() {
-                    GameObject aiPlayer = new GameObject("AIPlayer") {
+
+                private void createFireball() {
+                    if (player == null) return;
+                    TransformComponent playerTrans = player.getComponent(TransformComponent.class);
+                    Vector2 playerPos = playerTrans.getPosition();
+
+                    Vector2 fireDir = new Vector2(
+                        mousePos.x - playerPos.x,
+                        mousePos.y - playerPos.y
+                    ).normalize();
+
+                    GameObject fireball = new GameObject("火球") {
+                        private final Vector2 direction = fireDir;
+
+                        @Override
+                        public void update(float deltaTime) {
+                            super.update(deltaTime);
+                            updateComponents(deltaTime);
+                            TransformComponent trans = getComponent(TransformComponent.class);
+                            if (trans != null) {
+                                Vector2 pos = trans.getPosition();
+                                pos.x += direction.x * FIREBALL_SPEED * deltaTime;
+                                pos.y += direction.y * FIREBALL_SPEED * deltaTime;
+                                trans.setPosition(pos);
+                            }
+                        }
+
+                        @Override
+                        public void render() {
+                            super.render();
+                            renderComponents();
+                        }
+                    };
+
+                    Vector2 firePos = new Vector2(playerPos.x, playerPos.y);
+                    fireball.addComponent(new TransformComponent(firePos));
+                    RenderComponent fireRender = fireball.addComponent(new RenderComponent(
+                            RenderComponent.RenderType.RECTANGLE,
+                            new Vector2(8, 12),
+                            new RenderComponent.Color(1.0f, 0.0f, 0.0f, 1.0f)
+                    ));
+                    fireRender.setRenderer(renderer);
+                    fireball.addComponent(new PhysicsComponent(0.1f));
+
+                    fireballs.add(fireball);
+                    addGameObject(fireball);
+                }
+
+                private void createCentipede() {
+                    GameObject centipede = new GameObject("蜈蚣精") {
                         @Override
                         public void update(float deltaTime) {
                             super.update(deltaTime);
                             updateComponents(deltaTime);
                         }
-                        
+
                         @Override
                         public void render() {
+                            super.render();
                             renderComponents();
                         }
                     };
-                    
-                    Vector2 position;
-                    do {
-                        position = new Vector2(
-                            random.nextFloat() * 1920,
-                            random.nextFloat() * 1080
-                        );
-                    } while (position.distance(new Vector2(960, 540)) < 100);
-                    
-                    aiPlayer.addComponent(new TransformComponent(position));
-                    
-                    RenderComponent render = aiPlayer.addComponent(new RenderComponent(
-                        RenderComponent.RenderType.RECTANGLE,
-                        new Vector2(20, 20),
-                        new RenderComponent.Color(0.0f, 0.8f, 1.0f, 1.0f)
+
+                    Vector2 spawnPos = getRandomEdgePos();
+                    centipede.addComponent(new TransformComponent(spawnPos));
+                    RenderComponent centiRender = centipede.addComponent(new RenderComponent(
+                            RenderComponent.RenderType.RECTANGLE,
+                            new Vector2(22, 22),
+                            new RenderComponent.Color(0.6f, 0.3f, 0.0f, 1.0f)
                     ));
-                    render.setRenderer(renderer);
-                    
-                    PhysicsComponent physics = aiPlayer.addComponent(new PhysicsComponent(0.5f));
-                    physics.setVelocity(new Vector2(
-                        (random.nextFloat() - 0.5f) * 150,
-                        (random.nextFloat() - 0.5f) * 150
-                    ));
-                    physics.setFriction(0.98f);
-                    
-                    addGameObject(aiPlayer);
+                    centiRender.setRenderer(renderer);
+                    PhysicsComponent centiPhys = centipede.addComponent(new PhysicsComponent(0.5f));
+                    centiPhys.setFriction(0.98f);
+
+                    centipedes.add(centipede);
+                    addGameObject(centipede);
                 }
-                
-                private void createDecorations() {
-                    for (int i = 0; i < 5; i++) {
-                        createDecoration();
+
+                // ======【并行优化1 - 自适应并行火球更新】基于ExecutorService线程池 开始 ======
+                private void updateFireballs(float deltaTime) {
+                    if (fireballs.size() < PARALLEL_THRESHOLD) {
+                        Iterator<GameObject> fireIter = fireballs.iterator();
+                        while (fireIter.hasNext()) {
+                            GameObject fb = fireIter.next();
+                            TransformComponent trans = fb.getComponent(TransformComponent.class);
+                            if (trans == null) {
+                                fireIter.remove();
+                                fb.destroy();
+                                continue;
+                            }
+                            Vector2 pos = trans.getPosition();
+                            if (pos.y <= 0 || pos.x < 0 || pos.x > WINDOW_WIDTH || pos.y > WINDOW_HEIGHT) {
+                                fireIter.remove();
+                                fb.destroy();
+                            }
+                        }
+                        return;
+                    }
+
+                    List<Future<?>> futures = new ArrayList<>();
+                    int batchSize = (int) Math.ceil((double) fireballs.size() / CORE_POOL_SIZE);
+                    for (int i = 0; i < CORE_POOL_SIZE; i++) {
+                        final int start = i * batchSize;
+                        final int end = Math.min(start + batchSize, fireballs.size());
+                        futures.add(physicsExecutor.submit(() -> {
+                            for (int j = start; j < end; j++) {
+                                GameObject fb = fireballs.get(j);
+                                TransformComponent trans = fb.getComponent(TransformComponent.class);
+                                if (trans == null) {
+                                    synchronized (fireballs) {
+                                        fireballs.remove(j);
+                                        fb.destroy();
+                                    }
+                                    continue;
+                                }
+                                Vector2 pos = trans.getPosition();
+                                if (pos.y <= 0 || pos.x < 0 || pos.x > WINDOW_WIDTH || pos.y > WINDOW_HEIGHT) {
+                                    synchronized (fireballs) {
+                                        fireballs.remove(j);
+                                        fb.destroy();
+                                    }
+                                }
+                            }
+                        }));
+                    }
+                    for (Future<?> future : futures) {
+                        try { future.get(); } catch (Exception e) { e.printStackTrace(); }
                     }
                 }
-                
-                private void createDecoration() {
-                    GameObject decoration = new GameObject("Decoration") {
-                        @Override
-                        public void update(float deltaTime) {
-                            super.update(deltaTime);
-                            updateComponents(deltaTime);
+                // ======【并行优化1 - 自适应并行火球更新】结束 ======
+
+                // ======【并行优化2 - 自适应并行蜈蚣精物理更新+追踪】核心性能优化 开始 ======
+                private void updateCentipedes(float deltaTime) {
+                    if (player == null || centipedes.isEmpty()) return;
+                    TransformComponent playerTrans = player.getComponent(TransformComponent.class);
+                    Vector2 playerPos = playerTrans.getPosition();
+
+                    if (centipedes.size() < PARALLEL_THRESHOLD) {
+                        for (GameObject cp : centipedes) {
+                            TransformComponent trans = cp.getComponent(TransformComponent.class);
+                            PhysicsComponent phys = cp.getComponent(PhysicsComponent.class);
+                            if (trans == null || phys == null) continue;
+                            Vector2 enemyPos = trans.getPosition();
+                            Vector2 dir = new Vector2(playerPos.x - enemyPos.x, playerPos.y - enemyPos.y).normalize();
+                            phys.setVelocity(dir.multiply(CENTIPEDE_SPEED));
                         }
-                        
-                        @Override
-                        public void render() {
-                            renderComponents();
+                        return;
+                    }
+
+                    List<Future<?>> futures = new ArrayList<>();
+                    int batchSize = (int) Math.ceil((double) centipedes.size() / CORE_POOL_SIZE);
+                    for (int i = 0; i < CORE_POOL_SIZE; i++) {
+                        final int start = i * batchSize;
+                        final int end = Math.min(start + batchSize, centipedes.size());
+                        final Vector2 targetPos = new Vector2(playerPos.x, playerPos.y);
+                        futures.add(physicsExecutor.submit(() -> {
+                            for (int j = start; j < end; j++) {
+                                GameObject cp = centipedes.get(j);
+                                TransformComponent trans = cp.getComponent(TransformComponent.class);
+                                PhysicsComponent phys = cp.getComponent(PhysicsComponent.class);
+                                if (trans == null || phys == null) continue;
+                                Vector2 enemyPos = trans.getPosition();
+                                Vector2 dir = new Vector2(targetPos.x - enemyPos.x, targetPos.y - enemyPos.y).normalize();
+                                phys.setVelocity(dir.multiply(CENTIPEDE_SPEED));
+                            }
+                        }));
+                    }
+                    for (Future<?> future : futures) {
+                        try { future.get(); } catch (Exception e) { e.printStackTrace(); }
+                    }
+                }
+                // ======【并行优化2 - 自适应并行蜈蚣精物理更新+追踪】结束 ======
+
+                // ======【并行优化3 - 并行碰撞检测+加分逻辑】核心性能优化 开始 ======
+                private void checkCollisions() {
+                    if (player == null || isPlayerDead) return;
+                    TransformComponent playerTrans = player.getComponent(TransformComponent.class);
+                    Vector2 playerPos = playerTrans.getPosition();
+
+                    for (GameObject cp : centipedes) {
+                        TransformComponent cpTrans = cp.getComponent(TransformComponent.class);
+                        if (cpTrans == null) continue;
+                        Vector2 cpPos = cpTrans.getPosition();
+                        float playerDistance = playerPos.distance(cpPos);
+                        if (playerDistance < 30) {
+                            isPlayerDead = true;
+                            return;
                         }
-                    };
+                    }
+
+                    if (fireballs.size() < PARALLEL_THRESHOLD) {
+                        Iterator<GameObject> fireIter = fireballs.iterator();
+                        while (fireIter.hasNext()) {
+                            GameObject fb = fireIter.next();
+                            TransformComponent fbTrans = fb.getComponent(TransformComponent.class);
+                            if (fbTrans == null) {
+                                fireIter.remove();
+                                fb.destroy();
+                                continue;
+                            }
+                            Vector2 fbPos = fbTrans.getPosition();
+                            Iterator<GameObject> centiIter = centipedes.iterator();
+                            while (centiIter.hasNext()) {
+                                GameObject cp = centiIter.next();
+                                TransformComponent cpTrans = cp.getComponent(TransformComponent.class);
+                                if (cpTrans == null) {
+                                    centiIter.remove();
+                                    cp.destroy();
+                                    continue;
+                                }
+                                Vector2 cpPos = cpTrans.getPosition();
+                                float hitDistance = fbPos.distance(cpPos);
+                                if (hitDistance < 25) {
+                                    fireIter.remove();
+                                    fb.destroy();
+                                    centiIter.remove();
+                                    cp.destroy();
+                                    score += 10;
+                                    break;
+                                }
+                            }
+                        }
+                        return;
+                    }
+
+                    List<Future<?>> futures = new ArrayList<>();
+                    Iterator<GameObject> fireIter = fireballs.iterator();
+                    while (fireIter.hasNext()) {
+                        GameObject fb = fireIter.next();
+                        futures.add(collisionExecutor.submit(() -> {
+                            TransformComponent fbTrans = fb.getComponent(TransformComponent.class);
+                            if (fbTrans == null) {
+                                synchronized (fireballs) { fireballs.remove(fb); fb.destroy(); }
+                                return;
+                            }
+                            Vector2 fbPos = fbTrans.getPosition();
+                            synchronized (centipedes) {
+                                Iterator<GameObject> centiIter = centipedes.iterator();
+                                while (centiIter.hasNext()) {
+                                    GameObject cp = centiIter.next();
+                                    TransformComponent cpTrans = cp.getComponent(TransformComponent.class);
+                                    if (cpTrans == null) { centiIter.remove(); cp.destroy(); continue; }
+                                    Vector2 cpPos = cpTrans.getPosition();
+                                    float hitDistance = fbPos.distance(cpPos);
+                                    if (hitDistance < 25) {
+                                        synchronized (fireballs) { fireballs.remove(fb); fb.destroy(); }
+                                        centiIter.remove();
+                                        cp.destroy();
+                                        synchronized (this) { score += 10; }
+                                        break;
+                                    }
+                                }
+                            }
+                        }));
+                    }
+                    for (Future<?> future : futures) {
+                        try { future.get(); } catch (Exception e) { e.printStackTrace(); }
+                    }
+                }
+                // ======【并行优化3 - 并行碰撞检测+加分逻辑】结束 ======
+
+                private Vector2 getRandomEdgePos() {
+                    int side = random.nextInt(4);
+                    float x = random.nextFloat() * WINDOW_WIDTH;
+                    float y = random.nextFloat() * WINDOW_HEIGHT;
+                    Vector2 pos = new Vector2(x, y);
                     
-                    Vector2 position = new Vector2(
-                        random.nextFloat() * 1920,
-                        random.nextFloat() * 1080
-                    );
-                    
-                    decoration.addComponent(new TransformComponent(position));
-                    
-                    RenderComponent render = decoration.addComponent(new RenderComponent(
-                        RenderComponent.RenderType.CIRCLE,
-                        new Vector2(5, 5),
-                        new RenderComponent.Color(0.5f, 0.5f, 1.0f, 0.8f)
-                    ));
-                    render.setRenderer(renderer);
-                    
-                    addGameObject(decoration);
+                    switch (side) {
+                        case 0:
+                            pos = new Vector2(x, -30);
+                            break;
+                        case 1:
+                            pos = new Vector2(x, WINDOW_HEIGHT + 30);
+                            break;
+                        case 2:
+                            pos = new Vector2(-30, y);
+                            break;
+                        case 3:
+                            pos = new Vector2(WINDOW_WIDTH + 30, y);
+                            break;
+                    }
+                    return pos;
                 }
             };
-            
+
             engine.setScene(gameScene);
             engine.run();
-            
+
         } catch (Exception e) {
             System.err.println("游戏运行出错: " + e.getMessage());
             e.printStackTrace();
         }
-        
         System.out.println("游戏结束");
     }
 }

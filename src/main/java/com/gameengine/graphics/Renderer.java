@@ -1,6 +1,7 @@
 package com.gameengine.graphics;
 
 import com.gameengine.input.InputManager;
+import com.gameengine.math.Vector2;
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.KeyAdapter;
@@ -96,9 +97,9 @@ public class Renderer extends JFrame {
     public void drawLine(float x1, float y1, float x2, float y2, float r, float g, float b, float a) {
         gamePanel.addDrawable(new LineDrawable(x1, y1, x2, y2, r, g, b, a));
     }
-    
-    public void drawText(float x, float y, String text, float r, float g, float b, float a) {
-        gamePanel.addDrawable(new TextDrawable(x, y, text, r, g, b, a));
+
+    public void drawText(String text, float x, float y, float r, float g, float b, float a) {
+        gamePanel.addDrawable(new TextDrawable(text, x, y, r, g, b, a));
     }
     
     public boolean shouldClose() {
@@ -211,28 +212,24 @@ public class Renderer extends JFrame {
             g.drawLine((int) x1, (int) y1, (int) x2, (int) y2);
         }
     }
-    
+
     private static class TextDrawable implements Drawable {
-        private float x, y;
         private String text;
+        private float x, y;
         private Color color;
-        
-        public TextDrawable(float x, float y, String text, float r, float g, float b, float a) {
+
+        public TextDrawable(String text, float x, float y, float r, float g, float b, float a) {
+            this.text = text;
             this.x = x;
             this.y = y;
-            this.text = text;
             this.color = new Color(r, g, b, a);
         }
-        
+
         @Override
         public void draw(Graphics2D g) {
             g.setColor(color);
-            g.setFont(new Font("Arial", Font.BOLD, 48));
-            FontMetrics fm = g.getFontMetrics();
-            int textWidth = fm.stringWidth(text);
-            int textX = (int) x - textWidth / 2;
-            int textY = (int) y + fm.getAscent() / 3;
-            g.drawString(text, textX, textY);
+            g.setFont(new Font("黑体", Font.BOLD, 18));
+            g.drawString(text, (int)x, (int)y);
         }
     }
 }
